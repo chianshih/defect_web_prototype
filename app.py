@@ -16,7 +16,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_file, send_from_directory, render_template
-from PIL import Image, UnidentifiedImageError
+from concurrent.futures import ThreadPoolExecutor
+from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import RequestEntityTooLarge
 
 BASE = Path(__file__).resolve().parent
@@ -116,6 +117,7 @@ def analyze_image(data: bytes):
     """利用 OpenAI vision 判讀白板；沒有 API key 時絕不假裝自動判讀。"""
     from openai import OpenAI
     image = Image.open(io.BytesIO(data))
+    image = ImageOps.exif_transpose(image)  # 手機照片依 EXIF 轉正，避免模型看到橫躺白板
     image = image.convert('RGB')
     image.thumbnail((1800, 1800))
     buf = io.BytesIO()
@@ -145,8 +147,13 @@ def analyze_image(data: bytes):
     obj['has_after_label'] = obj.get('has_after_label') is True
     raw_id = str(obj.get('full_id') or '').strip().upper()
     obj['full_id'] = raw_id if re.fullmatch(r'MEP-\d{8}-\d{3}(?:-\d+)?', raw_id) else ''
-    if obj['board_no'] is None and obj['full_id']:
-        obj['board_no'] = int(re.match(r'MEP-\d{8}-(\d{3})',obj['full_id']).group(1))
+    obj['id_conflict'] = False
+    if obj['full_id']:
+        id_no = int(re.match(r'MEP-\d{8}-(\d{3})',obj['full_id']).group(1))
+        if obj['board_no'] is None:
+            obj['board_no'] = id_no
+        elif obj['board_no'] != id_no:
+            obj['id_conflict'] = True  # 完整編號與白板編號矛盾，代表至少一個讀錯
     try:
         obj['confidence'] = max(0., min(1., float(obj.get('confidence') or 0)))
     except (ValueError, TypeError):
@@ -194,6 +201,8 @@ def decide(db, meta, file_name, submission_id):
     day = meta.get('found_date') or ''
     if confidence < 0.8 or num is None:
         return ('pending', None, '白板編號不明確或辨識信心不足，請人工核對')
+    if meta.get('id_conflict'):
+        return ('pending', None, f'完整編號 {meta.get("full_id")} 與白板編號 {num} 不一致，請人工核對')
     if typ == 'improvement':
         if not meta.get('has_after_label'):
             return ('pending',None,'未能確定白板有寫「改善後」，禁止自動配對')
@@ -204,6 +213,8 @@ def decide(db, meta, file_name, submission_id):
         if len(found) != 1:
             # 改善日期不是缺失開立日期，因此不能以改善日期消除編號歧義
             return ('pending',None,f'缺失編號 {num} 有 {len(found)} 筆對應資料，請確認')
+        if found[0]['status'] == '已結案':
+            return ('pending',None,f'{found[0]["public_id"]} 已結案，改善照片不自動重開，請人工確認')
         did = found[0]['id']
         add_improvement(db,did,file_name,day or date.today().isoformat(),submission_id)
         return ('matched',did,'已依編號配對，狀態更新為「已改善」（仍須複驗）')
@@ -260,7 +271,8 @@ def upload():
         return jsonify({'error':'請先選擇照片'}),400
     if len(photos) > 20:
         return jsonify({'error':'一次最多上傳 20 張照片，請分批'}),400
-    feedback = []
+    # 1) 依序驗證並保存原圖
+    jobs = []  # 每張：{'filename', 'content', 'name'} 或 {'filename', 'error'}
     for photo in photos:
         try:
             content = photo.read()
@@ -274,15 +286,33 @@ def upload():
                 raise ValueError('只接受 JPG、PNG、WEBP 圖片')
             name = uuid.uuid4().hex + ext
             (IMAGES/name).write_bytes(content)  # 原圖保存，不進行修圖
-            meta, reason = {}, ''
-            if not os.getenv('OPENAI_API_KEY'):
-                reason = '尚未設定 OPENAI_API_KEY，請人工核對這張照片；AI 並未執行'
-            else:
-                try:
-                    meta = analyze_image(content)
-                except Exception as exc:
-                    app.logger.warning('AI 分析失敗：%s',type(exc).__name__)
-                    reason = 'AI 分析暫時失敗，照片已保存，請人工核對'
+            jobs.append({'filename':photo.filename,'content':content,'name':name})
+        except (UnidentifiedImageError,OSError,ValueError) as exc:
+            jobs.append({'filename':photo.filename,'error':str(exc)})
+
+    # 2) 平行呼叫 AI（網路等待為主，執行緒即可）；單張失敗不影響其他張
+    def run_ai(job):
+        if 'error' in job:
+            return {}, ''
+        if not os.getenv('OPENAI_API_KEY'):
+            return {}, '尚未設定 OPENAI_API_KEY，請人工核對這張照片；AI 並未執行'
+        try:
+            return analyze_image(job['content']), ''
+        except Exception as exc:
+            app.logger.warning('AI 分析失敗（%s）：%s: %s', job['filename'], type(exc).__name__, str(exc)[:300])
+            return {}, 'AI 分析暫時失敗，照片已保存，請人工核對'
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ai_results = list(pool.map(run_ai, jobs))
+
+    # 3) 依上傳順序寫入資料庫，讓同批次的重複編號檢查仍然有效
+    feedback = []
+    for job, (meta, reason) in zip(jobs, ai_results):
+        photo_name = job['filename']
+        if 'error' in job:
+            feedback.append({'filename':photo_name,'status':'error','reason':job['error']})
+            continue
+        name = job['name']
+        try:
             with connect() as db:
                 cur = db.execute('INSERT INTO submissions(photo,original_filename,photo_type,board_no,ai_result,status,reason) VALUES (?,?,?,?,?,?,?)',
                     (name, photo.filename, meta.get('photo_type','unknown'),meta.get('board_no'),json.dumps(meta,ensure_ascii=False),'pending',reason))
@@ -293,9 +323,11 @@ def upload():
                 else:
                     outcome = 'pending'
                     db.execute('UPDATE submissions SET reason=? WHERE id=?',(reason,sid))
-            feedback.append({'filename':photo.filename,'status':outcome,'board_no':meta.get('board_no'), 'photo_type':meta.get('photo_type','unknown'),'reason':reason})
-        except (UnidentifiedImageError,OSError,ValueError) as exc:
-            feedback.append({'filename':photo.filename,'status':'error','reason':str(exc)})
+            feedback.append({'filename':photo_name,'status':outcome,'board_no':meta.get('board_no'), 'photo_type':meta.get('photo_type','unknown'),'reason':reason})
+        except Exception as exc:
+            # 交易已回滾；照片檔仍保存在 data/images，可重新上傳
+            app.logger.exception('寫入失敗（%s）', photo_name)
+            feedback.append({'filename':photo_name,'status':'error','reason':f'儲存失敗（{type(exc).__name__}），此張未建檔，請重新上傳'})
     return jsonify({'results':feedback})
 
 @app.post('/api/review/<int:sid>/confirm')
@@ -305,7 +337,7 @@ def confirm(sid):
     if typ not in ('defect','improvement'):
         return jsonify({'error':'請選擇「新缺失」或「改善後」'}),400
     with connect() as db:
-        sub = db.execute('SELECT * FROM submissions WHERE id=? AND status="pending"',(sid,)).fetchone()
+        sub = db.execute("SELECT * FROM submissions WHERE id=? AND status='pending'",(sid,)).fetchone()
         if sub is None:
             return jsonify({'error':'待確認資料不存在或已處理'}),404
         if typ == 'improvement':
@@ -342,7 +374,7 @@ def change_status(did):
         old = db.execute('SELECT id FROM defects WHERE id=?',(did,)).fetchone()
         if not old:
             return jsonify({'error':'缺失不存在'}),404
-        db.execute('UPDATE defects SET status=?, verified_date=CASE WHEN ?="已結案" THEN ? ELSE verified_date END WHERE id=?', (status,status,date.today().isoformat(),did))
+        db.execute("UPDATE defects SET status=?, verified_date=CASE WHEN ?='已結案' THEN ? ELSE verified_date END WHERE id=?", (status,status,date.today().isoformat(),did))
     return jsonify({'ok':True})
 
 @app.get('/api/export.xlsx')
