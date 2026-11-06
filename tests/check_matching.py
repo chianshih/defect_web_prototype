@@ -83,6 +83,7 @@ def fake_ai(content):
 
 A.analyze_image = fake_ai
 client = A.app.test_client()
+client.post('/api/login', json={'name': '測試員'})  # 第一位使用者（bootstrap）；上傳需要登入
 buf = io.BytesIO()
 Image.new('RGB', (64, 48), (10, 20, 30)).save(buf, 'JPEG')
 photo = buf.getvalue()

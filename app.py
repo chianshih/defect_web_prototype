@@ -6,19 +6,21 @@ import csv
 import io
 import difflib
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_file, send_from_directory, render_template
+from flask import Flask, jsonify, request, send_file, send_from_directory, render_template, session, redirect, g, has_request_context
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -31,6 +33,25 @@ DATABASE = DATA / 'defects.sqlite3'
 IMAGES.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+
+
+def load_secret_key():
+    '簽署登入 cookie 的金鑰：第一次啟動產生並存在 data/secret_key（不進版控），之後重複使用，重啟不會登出所有人。'
+    path = DATA / 'secret_key'
+    if path.exists() and path.read_text().strip():
+        return path.read_text().strip()
+    key = secrets.token_hex(32)
+    path.write_text(key)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return key
+
+
+app.secret_key = load_secret_key()
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['MAX_CONTENT_LENGTH'] = 65 * 1024 * 1024
 VALID_STATUSES = ['待改善', '改善中', '已改善', '待複驗', '退回改善', '已結案']
 EDIT_FIELDS = ('found_date', 'floor', 'location', 'item', 'description', 'contractor', 'status', 'improved_date', 'verified_date', 'notes')
@@ -143,11 +164,17 @@ def init_db():
             before_json TEXT, after_json TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1, is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         ''')
         # v1 資料庫原地升級：不移除照片、舊編號、改善歷程與 API 金鑰。
         for tab, cols in {
-            'defects': [('serial_no','INTEGER'),('deleted_at','TEXT'),('updated_at','TEXT')],
-            'submissions': [('photo_sha256','TEXT')],
+            'defects': [('serial_no','INTEGER'),('deleted_at','TEXT'),('updated_at','TEXT'),('created_by','TEXT')],
+            'submissions': [('photo_sha256','TEXT'),('uploaded_by','TEXT')],
+            'audit_log': [('actor','TEXT'),('ip','TEXT')],
             'improvements': [('voided_at','TEXT')],
         }.items():
             present = {r['name'] for r in db.execute(f'PRAGMA table_info({tab})')}
@@ -258,25 +285,32 @@ def analyze_image(data: bytes):
     return obj
 
 
-def audit(db, action, entity_type, entity_id, before=None, after=None):
+def current_name():
+    return getattr(g, 'user', None) if has_request_context() else None
+
+
+def audit(db, action, entity_type, entity_id, before=None, after=None, actor=None):
+    '操作者與 IP 自動取自目前請求（g.user、request.remote_addr）；請求外（測試、啟動）則為空。'
+    ip = request.remote_addr if has_request_context() else None
+    actor = actor or current_name()
     def encode(value):
         return json.dumps(value, ensure_ascii=False, default=str) if value is not None else None
-    db.execute('INSERT INTO audit_log(action,entity_type,entity_id,before_json,after_json) VALUES (?,?,?,?,?)',
-               (action, entity_type, entity_id, encode(before), encode(after)))
+    db.execute('INSERT INTO audit_log(action,entity_type,entity_id,before_json,after_json,actor,ip) VALUES (?,?,?,?,?,?,?)',
+               (action, entity_type, entity_id, encode(before), encode(after), actor, ip))
 
 
-def add_defect(db, meta, image_file):
+def add_defect(db, meta, image_file, created_by=None):
     '新缺失不需白板編號；依正式歸檔的順序分配全域不重用流水號。'
     day = roc_date(meta.get('found_date')) or date.today().isoformat()
     serial = db.execute('SELECT COALESCE(MAX(serial_no),0)+1 AS n FROM defects').fetchone()['n']
     public_id = display_id(serial)
     board_no = meta.get('board_no')
     board_no = int(board_no) if str(board_no or '').isdigit() else None
-    cur = db.execute('''INSERT INTO defects(public_id,serial_no,board_no,found_date,floor,location,item,description,contractor,status,initial_photo,notes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+    cur = db.execute('''INSERT INTO defects(public_id,serial_no,board_no,found_date,floor,location,item,description,contractor,status,initial_photo,notes,created_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (public_id,serial,board_no,day,meta.get('floor',''),meta.get('location',''),
              meta.get('item','聯合巡檢'),meta.get('description',''),meta.get('contractor',''),
-             '待改善',image_file,'AI辨識初稿，請現場確認'))
+             '待改善',image_file,'AI辨識初稿，請現場確認',created_by or current_name()))
     audit(db,'created','defect',cur.lastrowid,None,{'display_id':public_id,'photo':image_file})
     return cur.lastrowid
 
@@ -380,13 +414,139 @@ def decide(db, meta, file_name, submission_id):
         return ('created',did,'系統已按建檔順序自動分配 '+display_id(db.execute('SELECT serial_no FROM defects WHERE id=?',(did,)).fetchone()['serial_no']))
     return ('pending',None,'照片無法確定為新缺失或改善回覆')
 
+
+# ---- 登入（選名字，無密碼）與權限 --------------------------------------------------
+# 注意：沒有密碼，任何人都能選別人的名字；這是為了「留下紀錄、可追溯」，不是資安防護。IP 一併記錄。
+def admin_password():
+    return os.getenv('ADMIN_PASSWORD') or ''
+
+
+def admin_enabled():
+    return bool(admin_password())
+
+
+def clean_name(raw):
+    return re.sub(r'\s+', ' ', str(raw or '')).strip()[:30]
+
+
+PUBLIC_ENDPOINTS = {'login_page', 'api_login', 'api_logout', 'static'}
+
+
+@app.before_request
+def require_login():
+    g.user, g.admin = None, False
+    if request.endpoint in PUBLIC_ENDPOINTS:
+        return None
+    name = session.get('user')
+    if name:
+        with connect() as db:
+            row = db.execute('SELECT name FROM users WHERE name=? AND active=1', (name,)).fetchone()
+        if row:  # 被停用或不存在的名字等於未登入
+            g.user = row['name']
+            g.admin = bool(session.get('admin')) and admin_enabled()
+    if not g.user:
+        if request.path == '/':
+            return redirect('/login')
+        return jsonify({'error': '請先登入', 'login_required': True}), 401
+    if request.path.startswith('/api/admin/') and not g.admin:
+        return jsonify({'error': '需要管理員權限'}), 403
+    return None
+
+
+@app.get('/login')
+def login_page():
+    with connect() as db:
+        names = [r['name'] for r in db.execute('SELECT name FROM users WHERE active=1 ORDER BY name')]
+        empty = db.execute('SELECT COUNT(*) n FROM users').fetchone()['n'] == 0
+    return render_template('login.html', names=names, bootstrap=empty, admin_enabled=admin_enabled(), current=session.get('user', ''))
+
+
+@app.post('/api/login')
+def api_login():
+    data = request.get_json(silent=True) or {}
+    name = clean_name(data.get('name'))
+    password = str(data.get('admin_password') or '')
+    if not name:
+        return jsonify({'error': '請選擇或輸入名字'}), 400
+    g.user = None
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT COUNT(*) n FROM users').fetchone()['n'] == 0:
+            uid = db.execute('INSERT INTO users(name,is_admin) VALUES (?,1)', (name,)).lastrowid  # 第一位使用者
+            audit(db, 'user_add', 'user', uid, None, {'name': name, 'bootstrap': True}, actor=name)
+        row = db.execute('SELECT * FROM users WHERE name=? AND active=1', (name,)).fetchone()
+        if row is None:
+            return jsonify({'error': '名單中沒有這個名字或已停用，請洽管理員'}), 403
+        want_admin = bool(password)
+        if want_admin:
+            if not admin_enabled():
+                return jsonify({'error': '尚未啟用管理員功能（.env 未設定 ADMIN_PASSWORD）'}), 400
+            if not hmac.compare_digest(password.encode('utf-8'), admin_password().encode('utf-8')):
+                audit(db, 'login_failed', 'user', row['id'], None, {'admin': True}, actor=name)
+                return jsonify({'error': '管理員密碼不正確'}), 403
+        session.clear()
+        session.permanent = True
+        session['user'] = row['name']
+        session['admin'] = want_admin
+        g.user = row['name']
+        audit(db, 'login', 'user', row['id'], None, {'admin': want_admin})
+    return jsonify({'ok': True, 'name': row['name'], 'admin': want_admin})
+
+
+@app.post('/api/logout')
+def api_logout():
+    name = session.get('user')
+    if name:
+        with connect() as db:
+            row = db.execute('SELECT id FROM users WHERE name=?', (name,)).fetchone()
+            if row:
+                audit(db, 'logout', 'user', row['id'], actor=name)
+    session.clear()
+    return jsonify({'ok': True})
+
+
+@app.get('/api/admin/users')
+def admin_users():
+    with connect() as db:
+        rows = db.execute('SELECT * FROM users ORDER BY active DESC, name').fetchall()
+    return jsonify({'items': [dict(r) for r in rows]})
+
+
+@app.post('/api/admin/users')
+def admin_add_user():
+    name = clean_name((request.get_json(silent=True) or {}).get('name'))
+    if not name:
+        return jsonify({'error': '請輸入名字'}), 400
+    with connect() as db:
+        try:
+            cur = db.execute('INSERT INTO users(name) VALUES (?)', (name,))
+        except sqlite3.IntegrityError:
+            return jsonify({'error': '這個名字已存在（若已停用請改按「啟用」）'}), 409
+        audit(db, 'user_add', 'user', cur.lastrowid, None, {'name': name})
+    return jsonify({'ok': True})
+
+
+@app.post('/api/admin/users/<int:uid>/active')
+def admin_set_user_active(uid):
+    active = 1 if (request.get_json(silent=True) or {}).get('active') else 0
+    with connect() as db:
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None:
+            return jsonify({'error': '找不到使用者'}), 404
+        if not active and row['name'] == g.user:
+            return jsonify({'error': '不能停用目前登入的自己'}), 400
+        db.execute('UPDATE users SET active=? WHERE id=?', (active, uid))
+        audit(db, 'user_activate' if active else 'user_deactivate', 'user', uid, {'active': row['active']}, {'active': active, 'name': row['name']})
+    return jsonify({'ok': True})
+
 @app.get('/')
 def home():
     return render_template('index.html')
 
 @app.get('/api/config')
 def config():
-    return jsonify({'ai_enabled': bool(os.getenv('OPENAI_API_KEY')), 'model': os.getenv('OPENAI_MODEL','gpt-4.1-mini'), 'share_urls': share_urls()})
+    return jsonify({'ai_enabled': bool(os.getenv('OPENAI_API_KEY')), 'model': os.getenv('OPENAI_MODEL','gpt-4.1-mini'), 'share_urls': share_urls(),
+                    'user': g.user, 'admin': g.admin, 'admin_enabled': admin_enabled()})
 
 @app.get('/api/defects')
 def list_defects():
@@ -483,8 +643,8 @@ def upload():
                 duplicate = db.execute("SELECT id FROM submissions WHERE photo_sha256=? AND status IN ('created','matched','pending') LIMIT 1",(hashval,)).fetchone()
                 if duplicate and not reason:
                     reason = '相同照片已經上傳過（紀錄 '+str(duplicate['id'])+'），請人工確認避免重複建檔'
-                cur = db.execute('INSERT INTO submissions(photo,original_filename,photo_type,board_no,ai_result,status,reason,photo_sha256) VALUES (?,?,?,?,?,?,?,?)',
-                    (name, photo_name, meta.get('photo_type','unknown'),meta.get('board_no'),json.dumps(meta,ensure_ascii=False),'pending',reason,hashval))
+                cur = db.execute('INSERT INTO submissions(photo,original_filename,photo_type,board_no,ai_result,status,reason,photo_sha256,uploaded_by) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (name, photo_name, meta.get('photo_type','unknown'),meta.get('board_no'),json.dumps(meta,ensure_ascii=False),'pending',reason,hashval,current_name()))
                 sid = cur.lastrowid
                 if not reason:
                     outcome, did, reason = decide(db,meta,name,sid)
@@ -497,6 +657,8 @@ def upload():
             # 交易已回滾；照片檔仍保存在 data/images，可重新上傳
             app.logger.exception('寫入失敗（%s）', photo_name)
             feedback.append({'filename':photo_name,'status':'error','reason':f'儲存失敗（{type(exc).__name__}），此張未建檔，請重新上傳'})
+    with connect() as db:
+        audit(db,'upload','submission',0,None,{'files':len(photos),'results':[f['status'] for f in feedback]})
     return jsonify({'results':feedback})
 
 @app.post('/api/review/<int:sid>/confirm')
@@ -526,7 +688,7 @@ def confirm(sid):
             if not roc_date(meta.get('found_date')):
                 return jsonify({'error':'請輸入有效日期，例如 2026-11-04'}),400
             meta['board_no'] = None  # 人工新增也由系統自動產生編號
-            did = add_defect(db,meta,sub['photo'])
+            did = add_defect(db,meta,sub['photo'],sub['uploaded_by'])  # 上傳者沿用原上傳人；確認者記在稽核紀錄
             new_status = 'created'
         db.execute('UPDATE submissions SET status=?, matched_defect_id=?, reason=? WHERE id=?', (new_status,did,'人工確認歸檔',sid))
         audit(db,'confirmed','submission',sid,None,{'status':new_status,'defect_id':did})
@@ -654,16 +816,16 @@ def export_xlsx():
     deep=book.add_format({'bold':True,'font_color':'#FFFFFF','bg_color':'#18324B','align':'center','valign':'vcenter','border':1,'border_color':'#DCE4EC'})
     normal=book.add_format({'text_wrap':True,'valign':'vcenter','border':1,'border_color':'#E1E7EE'})
     date_fmt=book.add_format({'num_format':'yyyy-mm-dd','valign':'vcenter','border':1,'border_color':'#E1E7EE'})
-    ws.merge_range('A1:O1','施工缺失管理清冊｜照片與改善回覆', book.add_format({'font_size':18,'bold':True,'font_color':'#18324B'}))
-    headers=['系統自動編號','發現日期','樓層','空間編號','檢查項目','缺失內容','權責廠商','改善狀態','原始缺失照片','改善後照片','改善日期','複驗日期','備註','原始圖檔','改善圖檔']
+    ws.merge_range('A1:P1','施工缺失管理清冊｜照片與改善回覆', book.add_format({'font_size':18,'bold':True,'font_color':'#18324B'}))
+    headers=['系統自動編號','發現日期','樓層','空間編號','檢查項目','缺失內容','權責廠商','改善狀態','原始缺失照片','改善後照片','改善日期','複驗日期','備註','原始圖檔','改善圖檔','上傳者']
     for c,h in enumerate(headers): ws.write(2,c,h,deep)
     ws.set_row(2,32)
-    widths=[22,15,12,15,16,38,16,15,37,37,15,15,33,28,28]
+    widths=[22,15,12,15,16,38,16,15,37,37,15,15,33,28,28,14]
     for c,width in enumerate(widths): ws.set_column(c,c,width)
     ws.freeze_panes(3,0)
     for i,r in enumerate(rows,3):
         ws.set_row(i,156)
-        vals=[display_id(r['serial_no']),r['found_date'],r['floor'],r['location'],r['item'],r['description'],r['contractor'],r['status'],'','',r['improved_date'],r['verified_date'],r['notes'],r['initial_photo'],r['improvement_photo']]
+        vals=[display_id(r['serial_no']),r['found_date'],r['floor'],r['location'],r['item'],r['description'],r['contractor'],r['status'],'','',r['improved_date'],r['verified_date'],r['notes'],r['initial_photo'],r['improvement_photo'],r['created_by']]
         for c,value in enumerate(vals): ws.write(i,c,value or '',normal)
         for col,key in ((8,'initial_photo'),(9,'improvement_photo')):
             name=r.get(key)

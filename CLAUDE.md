@@ -29,7 +29,7 @@ curl -F photos=@photo.jpg http://127.0.0.1:5000/api/upload
 curl -o out.xlsx http://127.0.0.1:5000/api/export.xlsx
 ```
 
-Config (`.env`, never commit or print it): `OPENAI_API_KEY` (optional), `OPENAI_MODEL` (default `gpt-4.1-mini`), `PORT`.
+Config (`.env`, never commit or print it): `OPENAI_API_KEY` (optional), `OPENAI_MODEL` (default `gpt-4.1-mini`), `PORT`, `HOST`, `ADMIN_PASSWORD`.
 
 ## Architecture
 
@@ -44,6 +44,10 @@ Everything lives in `app.py` (backend) and `templates/index.html` (single-page f
 - **Matching safety rules in `decide()` are the core business logic** — keep them conservative. Pending when: confidence < 0.8; `full_id` number ≠ `board_no` (`id_conflict`); improvement without explicit 改善後 label, without a number, or not matching exactly one defect; target defect already 已結案; new defect without date or description, same date+board_no exists, or `find_similar_defect()` finds same date + floor with description similarity ≥ `SIMILAR_RATIO`; identical photo hash already uploaded or earlier in the same batch (checked before the AI call, so duplicates cost nothing). Manual resolution is `/api/review/<sid>/confirm`.
 - **Statuses** (`VALID_STATUSES`): 待改善, 改善中, 已改善, 待複驗, 退回改善, 已結案. Auto-match sets only 已改善 (photo received); 已結案 is set manually after on-site re-inspection.
 - **Export**: `/api/export.xlsx` builds the register with embedded original and improvement photos via XlsxWriter.
+
+## Auth
+
+Name-pick login (no password, signed 30-day session cookie; key in `data/secret_key`). `users` table (never deleted, only deactivated). `before_request` guard: everything except `/login`, `/api/login`, `/api/logout`, static needs a login; `/api/admin/*` needs admin (name + `ADMIN_PASSWORD` at login; disabled if unset). `audit()` takes actor/IP from the request context. Attribution columns: `submissions.uploaded_by`, `defects.created_by` (the uploader, kept when someone else confirms), `audit_log.actor/ip`. Traceability only, not security. Tests: `tests/check_auth.py`.
 
 ## Constraints
 

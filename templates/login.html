@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>登入｜施工缺失管理</title>
+  <style>
+    :root{--bg:#f5f7fb;--ink:#182e43;--muted:#718195;--line:#dde6ee;--blue:#1460c7;--red:#bf3939}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--bg);color:var(--ink);font-family:"Noto Sans TC","Microsoft JhengHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
+    .card{width:min(420px,100%);background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 10px 30px rgba(20,43,74,.06)}
+    h1{font-size:21px;margin:0 0 6px}p{color:var(--muted);line-height:1.7;margin:0 0 18px}
+    label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:#54697f;margin-bottom:14px}
+    select,input[type=text],input[type=password]{width:100%;padding:12px;font:inherit;font-size:16px;border:1px solid var(--line);border-radius:10px;color:var(--ink);background:#fff}
+    .check{flex-direction:row;align-items:center;gap:8px}.check input{width:18px;height:18px}
+    button{width:100%;min-height:46px;border:0;border-radius:10px;background:var(--blue);color:#fff;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.6}
+    .err{color:var(--red);min-height:20px;margin:0 0 10px}.hint{font-size:12px;color:var(--muted);margin:14px 0 0;line-height:1.6}
+    :focus-visible{outline:3px solid #6aa5ff;outline-offset:2px}
+  </style>
+</head>
+<body>
+<form class="card" id="login-form">
+  <h1>▣ 施工缺失管理平台</h1>
+  {% if bootstrap %}
+  <p>這是第一次使用。請輸入你的名字，系統會建立第一位使用者；之後可在「後台管理」新增其他同事。</p>
+  <label>你的名字<input type="text" name="name" id="name" maxlength="30" autocomplete="off" required/></label>
+  {% else %}
+  <p>請選擇你的名字。系統會記住 30 天，並在你上傳或修改資料時留下紀錄。</p>
+  <label>目前使用者<select name="name" id="name" required>
+    <option value="">請選擇名字…</option>
+    {% for n in names %}<option value="{{ n }}" {{ 'selected' if n == current }}>{{ n }}</option>{% endfor %}
+  </select></label>
+  {% endif %}
+  {% if admin_enabled %}
+  <label class="check"><input type="checkbox" id="want-admin"/> 我要以管理員身分登入</label>
+  <label id="pw-wrap" hidden>管理員密碼<input type="password" id="pw" autocomplete="off"/></label>
+  {% endif %}
+  <div class="err" id="err" role="alert"></div>
+  <button type="submit" id="go">進入</button>
+  <p class="hint">此登入只用於留下操作紀錄，沒有密碼，並非資安防護；請使用自己的名字。{% if not admin_enabled %}管理員功能尚未啟用（需在 .env 設定 ADMIN_PASSWORD）。{% endif %}</p>
+</form>
+<script>
+const $=s=>document.querySelector(s);
+const cb=$('#want-admin');if(cb)cb.addEventListener('change',()=>{$('#pw-wrap').hidden=!cb.checked;if(cb.checked)$('#pw').focus()});
+$('#login-form').addEventListener('submit',async e=>{e.preventDefault();$('#err').textContent='';const b=$('#go');b.disabled=true;
+  try{const body={name:$('#name').value};if(cb&&cb.checked)body.admin_password=$('#pw').value;
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();
+    if(!r.ok)throw Error(j.error||'登入失敗');location.href='/'}
+  catch(err){$('#err').textContent=err.message;b.disabled=false}});
+</script>
+</body>
+</html>
