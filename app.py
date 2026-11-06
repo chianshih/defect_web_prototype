@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import csv
 import io
+import difflib
 import hashlib
 import json
 import os
@@ -261,6 +262,30 @@ def add_improvement(db, defect_id, photo, day, submission_id):
     audit(db,'improvement','defect',defect_id,None,{'photo':photo,'day':day,'submission_id':submission_id})
 
 
+SIMILAR_RATIO = 0.8
+
+
+def _norm_text(s):
+    # 去除空白與標點，只比對文字本身
+    return re.sub(r'[\s\W_]+', '', str(s or '')).lower()
+
+
+def find_similar_defect(db, day, floor, description):
+    '同日期、同樓層（任一方未填則不限）且缺失內容相似度 ≥ SIMILAR_RATIO 的既有缺失；用於無白板編號時的防重複。'
+    target = _norm_text(description)
+    if not target:
+        return None
+    floor = _norm_text(floor)
+    rows = db.execute('SELECT * FROM defects WHERE found_date=? AND deleted_at IS NULL', (day,)).fetchall()
+    for row in rows:
+        row_floor = _norm_text(row['floor'])
+        if floor and row_floor and floor != row_floor:
+            continue
+        if difflib.SequenceMatcher(None, target, _norm_text(row['description'])).ratio() >= SIMILAR_RATIO:
+            return row
+    return None
+
+
 def decide(db, meta, file_name, submission_id):
     typ = meta.get('photo_type','unknown')
     num = meta.get('board_no')
@@ -281,10 +306,10 @@ def decide(db, meta, file_name, submission_id):
             else:
                 found = db.execute('SELECT * FROM defects WHERE public_id=? AND deleted_at IS NULL',(fid,)).fetchall()
         elif num is not None:
-            # 優先以全球唯一自動流水號配對；舊白板號僅作舊資料相容候補。
-            found = db.execute('SELECT * FROM defects WHERE serial_no=? AND deleted_at IS NULL',(num,)).fetchall()
-            if not found:
-                found = db.execute('SELECT * FROM defects WHERE board_no=? AND deleted_at IS NULL',(num,)).fetchall()
+            # 只有「缺失 3」這種裸編號時，只比對白板編號，不可當成 RT-003：
+            # 每次巡檢白板編號都從 1 起算，RT-001～RT-0xx 一定存在，優先比流水號會靜默配錯。
+            # 有多筆同號時 len(found)!=1 → 人工確認。
+            found = db.execute('SELECT * FROM defects WHERE board_no=? AND deleted_at IS NULL',(num,)).fetchall()
         else:
             return ('pending',None,'改善後照片無法辨識缺失編號')
         if len(found) != 1:
@@ -304,6 +329,9 @@ def decide(db, meta, file_name, submission_id):
             existing = db.execute('SELECT id FROM defects WHERE board_no=? AND found_date=? AND deleted_at IS NULL',(num,day)).fetchall()
             if existing:
                 return ('pending',None,'同日期同白板編號已存在，請先確認是否為重複照片')
+        similar = find_similar_defect(db, day, meta.get('floor',''), meta['description'])
+        if similar:
+            return ('pending',None,f'與 {display_id(similar["serial_no"])}（同日期、同樓層、缺失內容相近）可能重複，請人工確認')
         did = add_defect(db,meta,file_name)
         return ('created',did,'系統已按建檔順序自動分配 '+display_id(db.execute('SELECT serial_no FROM defects WHERE id=?',(did,)).fetchone()['serial_no']))
     return ('pending',None,'照片無法確定為新缺失或改善回覆')
@@ -351,7 +379,8 @@ def upload():
     if len(photos) > 20:
         return jsonify({'error':'一次最多上傳 20 張照片，請分批'}),400
     # 1) 依序驗證並保存原圖
-    jobs = []  # 每張：{'filename', 'content', 'name'} 或 {'filename', 'error'}
+    jobs = []  # 每張：{'filename', 'content', 'name', 'sha256', 'dup'} 或 {'filename', 'error'}
+    batch_hashes = {}  # sha256 -> 本批次第一次出現的檔名
     for photo in photos:
         try:
             content = photo.read()
@@ -365,7 +394,16 @@ def upload():
                 raise ValueError('只接受 JPG、PNG、WEBP 圖片')
             name = uuid.uuid4().hex + ext
             (IMAGES/name).write_bytes(content)  # 原圖保存，不進行修圖
-            jobs.append({'filename':photo.filename,'content':content,'name':name})
+            hashval = hashlib.sha256(content).hexdigest()
+            # 先查重複再呼叫 AI，重複照片不浪費 API 費用
+            if hashval in batch_hashes:
+                dup = f'同一批次已有相同照片（{batch_hashes[hashval]}），請人工確認避免重複建檔'
+            else:
+                with connect() as db:
+                    prev = db.execute("SELECT id FROM submissions WHERE photo_sha256=? AND status IN ('created','matched','pending') LIMIT 1",(hashval,)).fetchone()
+                dup = f'相同照片已經上傳過（紀錄 {prev["id"]}），請人工確認避免重複建檔' if prev else ''
+                batch_hashes[hashval] = photo.filename
+            jobs.append({'filename':photo.filename,'content':content,'name':name,'sha256':hashval,'dup':dup})
         except (UnidentifiedImageError,OSError,ValueError) as exc:
             jobs.append({'filename':photo.filename,'error':str(exc)})
 
@@ -373,6 +411,8 @@ def upload():
     def run_ai(job):
         if 'error' in job:
             return {}, ''
+        if job['dup']:
+            return {}, job['dup']
         if not os.getenv('OPENAI_API_KEY'):
             return {}, '尚未設定 OPENAI_API_KEY，請人工核對這張照片；AI 並未執行'
         try:
@@ -394,7 +434,8 @@ def upload():
         try:
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                hashval = hashlib.sha256(job['content']).hexdigest()
+                hashval = job['sha256']
+                # 第 1 步已查過；交易內再查一次，防止同時有另一個上傳請求
                 duplicate = db.execute("SELECT id FROM submissions WHERE photo_sha256=? AND status IN ('created','matched','pending') LIMIT 1",(hashval,)).fetchone()
                 if duplicate and not reason:
                     reason = '相同照片已經上傳過（紀錄 '+str(duplicate['id'])+'），請人工確認避免重複建檔'
