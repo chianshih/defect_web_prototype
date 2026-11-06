@@ -425,6 +425,11 @@ def admin_enabled():
     return bool(admin_password())
 
 
+def self_register_enabled():
+    '登入頁「名單中沒有我」自行新增名字；預設開啟，.env 設 ALLOW_SELF_REGISTER=0 則只能由管理員新增。'
+    return (os.getenv('ALLOW_SELF_REGISTER') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
+
+
 def clean_name(raw):
     return re.sub(r'\s+', ' ', str(raw or '')).strip()[:30]
 
@@ -458,7 +463,8 @@ def login_page():
     with connect() as db:
         names = [r['name'] for r in db.execute('SELECT name FROM users WHERE active=1 ORDER BY name')]
         empty = db.execute('SELECT COUNT(*) n FROM users').fetchone()['n'] == 0
-    return render_template('login.html', names=names, bootstrap=empty, admin_enabled=admin_enabled(), current=session.get('user', ''))
+    return render_template('login.html', names=names, bootstrap=empty, admin_enabled=admin_enabled(),
+                           self_register=self_register_enabled(), current=session.get('user', ''))
 
 
 @app.post('/api/login')
@@ -474,9 +480,18 @@ def api_login():
         if db.execute('SELECT COUNT(*) n FROM users').fetchone()['n'] == 0:
             uid = db.execute('INSERT INTO users(name,is_admin) VALUES (?,1)', (name,)).lastrowid  # 第一位使用者
             audit(db, 'user_add', 'user', uid, None, {'name': name, 'bootstrap': True}, actor=name)
+        elif data.get('new') and self_register_enabled():
+            # 自行新增：同名（含已停用）就不重複建立；已存在且啟用則直接以該名字登入
+            existing = db.execute('SELECT id FROM users WHERE name=?', (name,)).fetchone()
+            if existing is None:
+                uid = db.execute('INSERT INTO users(name) VALUES (?)', (name,)).lastrowid
+                audit(db, 'user_self_register', 'user', uid, None, {'name': name}, actor=name)
         row = db.execute('SELECT * FROM users WHERE name=? AND active=1', (name,)).fetchone()
         if row is None:
-            return jsonify({'error': '名單中沒有這個名字或已停用，請洽管理員'}), 403
+            if db.execute('SELECT 1 FROM users WHERE name=?', (name,)).fetchone():
+                return jsonify({'error': '這個名字已被管理員停用，請洽管理員'}), 403
+            hint = '請選「名單中沒有我」新增，或洽管理員' if self_register_enabled() else '請洽管理員新增'
+            return jsonify({'error': '名單中沒有這個名字，' + hint}), 403
         want_admin = bool(password)
         if want_admin:
             if not admin_enabled():

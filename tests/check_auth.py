@@ -175,13 +175,39 @@ with sqlite3.connect(legacy) as db:
         CREATE TABLE submissions(id INTEGER PRIMARY KEY AUTOINCREMENT, photo TEXT NOT NULL, status TEXT NOT NULL);
         CREATE TABLE audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL);
         INSERT INTO audit_log(action,entity_type,entity_id) VALUES ('old','defect',1);''')
-A.DATABASE = legacy
+main_db, A.DATABASE = A.DATABASE, legacy
 A.init_db()
 with A.connect() as db:
     cols = lambda t: {r['name'] for r in db.execute(f'PRAGMA table_info({t})')}
     ok = ('created_by' in cols('defects') and 'uploaded_by' in cols('submissions') and {'actor', 'ip'} <= cols('audit_log')
           and bool(cols('users')) and db.execute('SELECT COUNT(*) n FROM audit_log').fetchone()['n'] == 1)
 check('legacy DB upgraded additively (columns + users table, old rows kept)', ok)
+A.DATABASE = main_db  # later checks must run against the normal test DB, not the minimal legacy one
+
+# --- self-register from the login page ("名單中沒有我") ---------------------------------------
+os.environ.pop('ALLOW_SELF_REGISTER', None)
+page = A.app.test_client().get('/login').get_data(as_text=True)
+check('login page offers 名單中沒有我 by default', 'option value="__new__"' in page)
+newbie = A.app.test_client()
+r = newbie.post('/api/login', json={'name': '  陳  新人 ', 'new': True})
+check('new name self-registers and logs in', r.status_code == 200 and r.get_json()['name'] == '陳 新人', r.get_data(as_text=True)[:80])
+check('self-registered user is active, not admin', [tuple(r[k] for k in ('active', 'is_admin')) for r in rows("SELECT active,is_admin FROM users WHERE name='陳 新人'")] == [(1, 0)])
+check('self-register audited', len(rows("SELECT * FROM audit_log WHERE action='user_self_register' AND actor='陳 新人'")) == 1)
+check('self-registered user can use the app', newbie.get('/api/defects').status_code == 200)
+r = A.app.test_client().post('/api/login', json={'name': '陳 新人', 'new': True})
+check('typing an existing name logs in, no duplicate row', r.status_code == 200 and len(rows("SELECT * FROM users WHERE name='陳 新人'")) == 1)
+check('picking unknown name without new flag -> 403', A.app.test_client().post('/api/login', json={'name': '路人甲'}).status_code == 403)
+boss.post('/api/admin/users', json={'name': '已停用者'})
+boss.post(f'/api/admin/users/{rows("SELECT id FROM users WHERE name=?", "已停用者")[0]["id"]}/active', json={'active': False})
+r = A.app.test_client().post('/api/login', json={'name': '已停用者', 'new': True})
+check('deactivated name cannot re-register', r.status_code == 403 and '停用' in r.get_json()['error'], r.get_data(as_text=True)[:80])
+check('self-register cannot grant admin without password',
+      A.app.test_client().post('/api/login', json={'name': '想當管理員', 'new': True}).get_json().get('admin') is False)
+os.environ['ALLOW_SELF_REGISTER'] = '0'
+check('ALLOW_SELF_REGISTER=0 hides the option', 'option value="__new__"' not in A.app.test_client().get('/login').get_data(as_text=True))
+r = A.app.test_client().post('/api/login', json={'name': '關閉時新人', 'new': True})
+check('ALLOW_SELF_REGISTER=0 rejects new names', r.status_code == 403 and not rows("SELECT * FROM users WHERE name='關閉時新人'"))
+os.environ.pop('ALLOW_SELF_REGISTER', None)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f'\n{"ALL PASSED" if not failures else str(len(failures)) + " FAILED"}')

@@ -28,7 +28,11 @@
   <label>目前使用者<select name="name" id="name" required>
     <option value="">請選擇名字…</option>
     {% for n in names %}<option value="{{ n }}" {{ 'selected' if n == current }}>{{ n }}</option>{% endfor %}
+    {% if self_register %}<option value="__new__">＋ 名單中沒有我（新增名字）</option>{% endif %}
   </select></label>
+  {% if self_register %}
+  <label id="new-wrap" hidden>你的名字（請用全名，之後同事都會從名單選到你）<input type="text" id="new-name" maxlength="30" autocomplete="off"/></label>
+  {% endif %}
   {% endif %}
   {% if admin_enabled %}
   <label class="check"><input type="checkbox" id="want-admin"/> 我要以管理員身分登入</label>
@@ -40,9 +44,11 @@
 </form>
 <script>
 const $=s=>document.querySelector(s);
+const sel=$('select#name'),nw=$('#new-wrap');
+if(sel&&nw)sel.addEventListener('change',()=>{const on=sel.value==='__new__';nw.hidden=!on;$('#new-name').required=on;if(on)$('#new-name').focus()});
 const cb=$('#want-admin');if(cb)cb.addEventListener('change',()=>{$('#pw-wrap').hidden=!cb.checked;if(cb.checked)$('#pw').focus()});
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();$('#err').textContent='';const b=$('#go');b.disabled=true;
-  try{const body={name:$('#name').value};if(cb&&cb.checked)body.admin_password=$('#pw').value;
+  try{const isNew=sel&&sel.value==='__new__';const body=isNew?{name:$('#new-name').value,new:true}:{name:$('#name').value};if(cb&&cb.checked)body.admin_password=$('#pw').value;
     const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();
     if(!r.ok)throw Error(j.error||'登入失敗');location.href='/'}
   catch(err){$('#err').textContent=err.message;b.disabled=false}});
