@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import uuid
 from datetime import datetime, date
@@ -33,6 +34,49 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 65 * 1024 * 1024
 VALID_STATUSES = ['待改善', '改善中', '已改善', '待複驗', '退回改善', '已結案']
 EDIT_FIELDS = ('found_date', 'floor', 'location', 'item', 'description', 'contractor', 'status', 'improved_date', 'verified_date', 'notes')
+
+def server_host():
+    return (os.getenv('HOST') or '127.0.0.1').strip()
+
+
+def server_port():
+    return int(os.getenv('PORT') or '5000')
+
+
+def lan_ipv4s():
+    '只用標準函式庫找出本機的區域網路 IPv4（UDP connect 不會真的送出封包）；略過 127.x 與 169.254.x。'
+    found = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found += [i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    out = []
+    for ip in found:
+        if not ip.startswith(('127.', '169.254.', '0.')) and ip not in out:
+            out.append(ip)
+    return out
+
+
+def share_urls():
+    'HOST=0.0.0.0 時回傳本機、區域網路 IP 及主機名稱網址；否則只有本機網址。'
+    port, host = server_port(), server_host()
+    urls = [f'http://127.0.0.1:{port}']
+    if host in ('0.0.0.0', ''):
+        urls = [f'http://{ip}:{port}' for ip in lan_ipv4s()] + urls
+        try:
+            urls.append(f'http://{socket.gethostname()}:{port}')
+        except OSError:
+            pass
+    elif host not in ('127.0.0.1', 'localhost'):
+        urls = [f'http://{host}:{port}']
+    return urls
+
 
 def display_id(serial):
     # 只修改展示用編號；序列值與舊 public_id 不更動。超過 999 會自然顯示 RT-1000，不會重複。
@@ -342,7 +386,7 @@ def home():
 
 @app.get('/api/config')
 def config():
-    return jsonify({'ai_enabled': bool(os.getenv('OPENAI_API_KEY')), 'model': os.getenv('OPENAI_MODEL','gpt-4.1-mini')})
+    return jsonify({'ai_enabled': bool(os.getenv('OPENAI_API_KEY')), 'model': os.getenv('OPENAI_MODEL','gpt-4.1-mini'), 'share_urls': share_urls()})
 
 @app.get('/api/defects')
 def list_defects():
@@ -655,4 +699,11 @@ def too_large(err):
 init_db()
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1',port=int(os.getenv('PORT','5000')),debug=False)
+    from waitress import serve
+    host, port = server_host(), server_port()
+    print('施工缺失管理網頁已啟動，可使用以下網址：', flush=True)
+    for u in share_urls():
+        print('  ' + u, flush=True)
+    if host not in ('0.0.0.0', ''):
+        print('（目前只限本機使用；要讓同網路的人連線，請在 .env 設定 HOST=0.0.0.0）', flush=True)
+    serve(app, host=host, port=port, threads=8)

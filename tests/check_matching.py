@@ -100,6 +100,17 @@ r2 = upload('a_again.jpg')
 check('re-upload in a later batch -> no AI call', len(calls) == 1, f'calls={len(calls)}')
 check('re-upload -> pending as duplicate', r2[0]['status'] == 'pending' and '已經上傳過' in r2[0]['reason'], r2[0]['reason'])
 
+# --- LAN share URLs ------------------------------------------------------------------
+os.environ.pop('HOST', None)
+os.environ['PORT'] = '5099'
+check('default HOST -> only local URL', A.share_urls() == ['http://127.0.0.1:5099'], str(A.share_urls()))
+os.environ['HOST'] = '0.0.0.0'
+urls = A.share_urls()
+check('HOST=0.0.0.0 -> local + hostname URLs, no 127.x/169.254 LAN entries',
+      'http://127.0.0.1:5099' in urls and f'http://{A.socket.gethostname()}:5099' in urls
+      and not any(u.startswith(('http://169.254.', 'http://0.')) for u in urls), str(urls))
+check('/api/config exposes share_urls', client.get('/api/config').get_json().get('share_urls') == urls)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print(f'\n{"ALL PASSED" if not failures else str(len(failures)) + " FAILED"}')
 sys.exit(1 if failures else 0)

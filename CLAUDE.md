@@ -47,5 +47,5 @@ Everything lives in `app.py` (backend) and `templates/index.html` (single-page f
 
 ## Constraints
 
-- Binds to `127.0.0.1` only, with no auth/HTTPS — a single-machine prototype. Don't expose it publicly or expand into production scope unless asked.
+- Binds to `127.0.0.1` by default (`HOST=0.0.0.0` in `.env` opens it to the LAN; served by waitress when run as `python app.py`). No HTTPS. Don't expose it publicly or expand into production scope unless asked.
 - Upload limits: JPG/PNG/WEBP, ≤20 files per batch, ≤12 MB each (`MAX_CONTENT_LENGTH` 65 MB per request).

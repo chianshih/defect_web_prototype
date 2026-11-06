@@ -10,7 +10,7 @@
     a{color:inherit} button,input,select,textarea{font:inherit} button{cursor:pointer}
     header{background:#142f48;color:white;padding:17px 28px} .header-inner{max-width:1400px;margin:auto;display:flex;gap:14px;align-items:center;justify-content:space-between}
     .logo{font-weight:800;font-size:19px;letter-spacing:.4px}.logo small{display:block;font-weight:400;opacity:.65;font-size:11px;margin-top:3px;letter-spacing:0}
-    .top-pill{font-size:12px;border:1px solid #6b8091;border-radius:50px;padding:7px 12px;color:#e3edf7}
+    .share-line{margin-top:8px;font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}.share-line code{background:#eef2f7;color:var(--ink);padding:3px 8px;border-radius:6px;font-size:12px;word-break:break-all}.top-pill{font-size:12px;border:1px solid #6b8091;border-radius:50px;padding:7px 12px;color:#e3edf7}
     main{max-width:1400px;margin:auto;padding:27px 26px 60px}
     .hero{display:flex;gap:18px;align-items:end;justify-content:space-between;margin-bottom:22px;flex-wrap:wrap}.hero h1{font-size:27px;margin:0 0 6px;letter-spacing:.1px}.hero p{color:var(--muted);margin:0;line-height:1.7}
     .btn{border:1px solid var(--line);background:white;color:var(--ink);border-radius:10px;padding:11px 15px;font-weight:700;display:inline-flex;align-items:center;gap:8px;justify-content:center;text-decoration:none}.btn:hover{filter:brightness(.97)}.btn.primary{background:#1460c7;border-color:#1460c7;color:white}.btn.small{padding:8px 10px;font-size:12px}
@@ -58,7 +58,7 @@
 <body>
 <header><div class="header-inner"><div class="logo">▣ 施工缺失管理平台<small>Photo-to-Record · 現場照片智慧歸檔</small></div><div class="top-pill" id="ai-status">辨識服務檢查中</div></div></header>
 <main>
-  <div class="hero"><div><h1>讓每張照片，自動找到它的位置。</h1><p>新缺失由系統自動編號 → 改善後照片依編號歸檔 → 可在後台修正及移除</p></div><div style="display:flex;gap:9px"><button class="btn" id="open-admin">⚙ 後台管理</button><a class="btn" href="/api/export.xlsx">⇩ 匯出 Excel 清冊</a></div></div>
+  <div class="hero"><div><h1>讓每張照片，自動找到它的位置。</h1><p>新缺失由系統自動編號 → 改善後照片依編號歸檔 → 可在後台修正及移除</p><div class="share-line" id="share-line" hidden><span>分享網址</span><span id="share-urls"></span><button class="btn small" id="copy-share" type="button">複製</button></div></div><div style="display:flex;gap:9px"><button class="btn" id="open-admin">⚙ 後台管理</button><a class="btn" href="/api/export.xlsx">⇩ 匯出 Excel 清冊</a></div></div>
   <div class="stats">
     <div class="stat"><b id="stat-total">—</b><span>累計缺失</span></div><div class="stat"><b id="stat-open">—</b><span>尚未結案</span></div><div class="stat"><b id="stat-improved">—</b><span>已改善（含待複驗）</span></div><div class="stat clickable" id="stat-review-card" role="button" tabindex="0" title="前往人工確認區"><b id="stat-review">—</b><span>照片待人工確認</span></div>
   </div>
@@ -143,7 +143,8 @@ if(restore){let d=adminRecords.find(x=>x.id===+restore.dataset.restore);await ap
 $('#edit-form').addEventListener('submit',e=>{e.preventDefault();$('#edit-save').click()});
 $('#edit-save').addEventListener('click',async()=>{if(editingId===null)return;const payload=Object.fromEntries(new FormData($('#edit-form')));if(!payload.found_date){toast('請輸入發現日期');return}try{await apiJson(`/api/admin/defects/${editingId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeEdit();await load();toast('紀錄已更新','ok')}catch(err){toast(err.message)}});
 $('#admin-photo-list').addEventListener('click',async e=>{let btn=e.target.closest('[data-reopen]');if(!btn)return;let p=adminPhotos.find(x=>x.id===+btn.dataset.reopen);if(!confirm(`是否撤銷這張照片目前的「${p.status==='created'?'新增缺失':'改善後'}」分類？\n此照片會回到待確認區，相關正式資料同步回復，照片仍保留。`))return;try{await apiJson(`/api/admin/submissions/${p.id}/reopen`,{method:'POST'});await load();$('#review-section').scrollIntoView({behavior:'smooth'})}catch(err){toast(err.message)}});
-Promise.all([fetch('/api/config').then(r=>r.json()),load()]).then(([config])=>{let enabled=config.ai_enabled;$('#ai-status').textContent=enabled?'● AI 自動判讀已啟用':'○ 尚未設定 AI 辨識';$('#offline-notice').hidden=enabled}).catch(e=>{$('#record-grid').innerHTML=`<div class="empty-message">讀取失敗：${esc(e.message)}</div>`});
+function setupShare(urls){if(urls.length<2)return;$('#share-urls').innerHTML=urls.map(u=>`<code>${esc(u)}</code>`).join(' ');$('#share-line').hidden=false;$('#copy-share').onclick=async()=>{let text=urls[0];try{await navigator.clipboard.writeText(text)}catch(e){let t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();let ok=false;try{ok=document.execCommand('copy')}catch(_){}t.remove();if(!ok){toast('無法自動複製，請手動選取網址');return}}toast('已複製：'+text,'ok')}}
+Promise.all([fetch('/api/config').then(r=>r.json()),load()]).then(([config])=>{let enabled=config.ai_enabled;$('#ai-status').textContent=enabled?'● AI 自動判讀已啟用':'○ 尚未設定 AI 辨識';$('#offline-notice').hidden=enabled;setupShare(config.share_urls||[])}).catch(e=>{$('#record-grid').innerHTML=`<div class="empty-message">讀取失敗：${esc(e.message)}</div>`});
 </script>
 </body>
 </html>
