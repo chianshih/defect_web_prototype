@@ -1,6 +1,30 @@
+# 機密：API 金鑰（只上傳範本 .env.example）
 .env
-__pycache__/
-*.pyc
+.env.*
+!.env.example
+
+# 執行資料：SQLite、上傳照片、備份（每台電腦各自產生，請另外備份 data/）
 data/
+*.sqlite3
+*.sqlite3-journal
+
+# Python 環境與快取
 .venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Windows 啟動器產生的安裝紀錄
+setup_log.txt
+*.log
+
+# 其他人的版本資料夾（含其 .env 與 data）
 TRY/
+
+# 作業系統與編輯器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
