@@ -1,0 +1,14 @@
+﻿施工缺失管理網頁啟動方法 (Windows)
+1. 在 ZIP 檔案上按右鍵 > 全部解壓縮；請勿在 ZIP 內雙擊啟動。
+2. 解壓縮後進入資料夾，雙擊 START_HERE_WINDOWS.bat。
+3. 第一次需要網路安裝套件。黑色視窗請保持開啟。
+4. 在瀏覽器開啟 http://127.0.0.1:5000
+5. 若失敗，請拍下黑色視窗的完整錯誤訊息；安裝失敗可附上 setup_log.txt。
+
+如果找不到 Python，按 Win+R，輸入 cmd，接著輸入：
+py --version
+或
+python --version
+若兩者均無法顯示 Python 版本，請重新確認 Python 是否加入 PATH。
+
+請勿把含有真實 API 金鑰的 .env 檔案分享給其他人。
