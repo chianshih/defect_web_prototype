@@ -801,7 +801,10 @@ def admin_reopen_submission(sid):
 @app.get('/api/admin/audit')
 def admin_audit():
     with connect() as db:
-        rows=db.execute('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').fetchall()
+        # created_at 以 UTC 儲存（SQLite CURRENT_TIMESTAMP）；顯示時轉成本機時間，避免台灣時間差 8 小時。
+        # 欄位逐一列出：SELECT * 再加同名別名會出現兩個 created_at，取到的仍是 UTC。
+        rows=db.execute("SELECT id,action,entity_type,entity_id,before_json,after_json,actor,ip,"
+                        "datetime(created_at,'localtime') AS created_at FROM audit_log ORDER BY id DESC LIMIT 100").fetchall()
     return jsonify({'items':[dict(r) for r in rows]})
 
 
