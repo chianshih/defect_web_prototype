@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>施工缺失管理｜現場照片智慧歸檔</title>
+  <title>台南群聯樓-缺失管理</title>
   <style>
     :root{--bg:#f5f7fb;--ink:#182e43;--muted:#718195;--line:#dde6ee;--card:#fff;--blue:#1859c1;--teal:#008d82;--warn:#ac6814;--red:#bf3939;--shadow:0 10px 30px rgba(20,43,74,.04)}
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans TC","Microsoft JhengHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
@@ -53,21 +53,30 @@
       .btn,.btn.small,select,.search,.review-form input,.review-form select,.modal-form input,.modal-form select,.record-bottom select{min-height:44px}
       input,select,textarea,.review-form input,.review-form select{font-size:16px}
       .record-bottom select{max-width:none;flex:1}}
+    .contractor-body{padding:20px 22px}.contractor-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:20px}.contractor-summary .stat{box-shadow:none}.contractor-chart{display:grid;gap:18px}.contractor-chart-row{border-top:1px solid var(--line);padding-top:14px}.contractor-chart-title{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px;overflow-wrap:anywhere}.contractor-chart-title span{color:var(--muted)}.contractor-bar-line{display:grid;grid-template-columns:65px minmax(0,1fr) 48px;align-items:center;gap:10px;margin:7px 0;font-size:12px}.contractor-track{height:14px;background:#eef2f7;border-radius:5px;overflow:hidden}.contractor-bar{height:100%;background:var(--blue);border-radius:5px}.contractor-bar.improved{background:var(--teal)}.contractor-bar.rate{background:#8660bb}.contractor-note{color:var(--muted);font-size:12px;line-height:1.7;margin:0 0 18px}.contractor-select{padding:10px;border:1px solid var(--line);border-radius:10px;max-width:100%;background:white}.contractor-summary .stat b{font-size:25px}@media(max-width:560px){.contractor-body{padding:15px}.contractor-summary{gap:6px}.contractor-summary .stat{padding:10px}.contractor-summary .stat b{font-size:22px}}
   </style>
 </head>
 <body>
-<header><div class="header-inner"><div class="logo">▣ 施工缺失管理平台<small>Photo-to-Record · 現場照片智慧歸檔</small></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="top-pill" id="user-pill">目前使用者：—</div><button class="top-pill" id="switch-user" type="button" style="background:none;cursor:pointer">切換使用者</button><div class="top-pill" id="ai-status">辨識服務檢查中</div></div></div></header>
+<header><div class="header-inner"><div class="logo">▣ 台南群聯樓-缺失管理<small>Photo-to-Record · 現場照片智慧歸檔</small></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="top-pill" id="user-pill">目前使用者：—</div><button class="top-pill" id="switch-user" type="button" style="background:none;cursor:pointer">切換使用者</button><div class="top-pill" id="ai-status">辨識服務檢查中</div></div></div></header>
 <main>
   <div class="hero"><div><h1>讓每張照片，自動找到它的位置。</h1><p>新缺失由系統自動編號 → 改善後照片依編號歸檔 → 可在後台修正及移除</p><div class="share-line" id="share-line" hidden><span>分享網址</span><span id="share-urls"></span><button class="btn small" id="copy-share" type="button">複製</button></div></div><div style="display:flex;gap:9px"><button class="btn" id="open-admin">⚙ 後台管理</button><a class="btn" href="/api/export.xlsx">⇩ 匯出 Excel 清冊</a></div></div>
   <div class="stats">
     <div class="stat"><b id="stat-total">—</b><span>累計缺失</span></div><div class="stat"><b id="stat-open">—</b><span>尚未結案</span></div><div class="stat"><b id="stat-improved">—</b><span>已改善（含待複驗）</span></div><div class="stat clickable" id="stat-review-card" role="button" tabindex="0" title="前往人工確認區"><b id="stat-review">—</b><span>照片待人工確認</span></div>
   </div>
+  <section class="section" aria-labelledby="contractor-heading">
+    <div class="section-head"><h2 id="contractor-heading">權責廠商改善統計</h2><label for="contractor-filter">顯示廠商 <select class="contractor-select" id="contractor-filter"><option value="">全部廠商</option></select></label></div>
+    <div class="contractor-body">
+      <p class="contractor-note">統計全部有效缺失，不受下方清冊篩選影響。已改善包含「已改善、待複驗、已結案」；改善完成率＝已改善數量 ÷ 缺失總數，不代表複驗合格。數量長條以目前顯示廠商的最大缺失總數為基準，完成率長條以 100% 為基準。</p>
+      <div class="contractor-summary" aria-live="polite"><div class="stat"><b id="contractor-total">—</b><span>缺失總數</span></div><div class="stat"><b id="contractor-improved">—</b><span>已改善數量</span></div><div class="stat"><b id="contractor-rate">—</b><span>改善完成率</span></div></div>
+      <div id="contractor-chart" class="contractor-chart"><div class="empty-message">統計載入中…</div></div>
+    </div>
+  </section>
   <section class="section">
     <div class="section-head"><div><h2>上傳現場照片</h2><small>不必選擇「缺失」或「改善後」；系統依白板文字分類</small></div><span class="tag">可一次多選，系統每 20 張分批處理</span></div>
     <input type="file" id="file-input" hidden accept="image/jpeg,image/png,image/webp" multiple/>
     <div class="upload-area" id="drop-area" role="button" tabindex="0"><div class="upload-ico">＋</div><strong id="selected-text">點擊選擇照片，或拖曳照片到這裡</strong><p>新增缺失不需手寫編號，系統自動編碼；改善後照片請寫「改善後 + 系統編號」，例如 RT-001。</p></div>
     <div class="upload-footer"><span class="help">為避免誤配：無法辨識編號、沒有明確改善後字樣、重複編號或模型不確定時，照片會先進入人工確認區，不自動更新。</span><button class="btn primary" id="upload-btn" disabled>開始上傳並判讀</button></div>
-    <div id="offline-notice" class="notice" hidden>尚未設定 OpenAI API 金鑰。現在可以瀏覽 32 筆初始資料、上傳並人工配對照片；如需自動辨識，請參考下載檔內的設定說明。</div>
+    <div id="offline-notice" class="notice" hidden>尚未設定 OpenAI API 金鑰。可上傳照片並透過人工確認建立缺失或配對改善紀錄；如需自動辨識，請參考設定說明。</div>
     <div id="batch-results" class="batch-results"></div>
   </section>
   <section class="section" id="review-section" hidden>
@@ -95,7 +104,7 @@
     </form><div class="modal-actions"><button class="btn" id="edit-cancel">取消</button><button class="btn primary" id="edit-save">儲存變更</button></div>
   </div></div>
   <section class="section">
-    <div class="section-head"><div><h2>缺失管理清冊</h2><small>舊有 32 筆保留歷史對照，後續上傳會自動接續編碼</small></div><div class="filters"><input class="search" id="search" placeholder="搜尋編號、樓層、缺失內容、廠商"/><select id="status-filter"><option value="">全部狀態</option><option>待改善</option><option>改善中</option><option>已改善</option><option>待複驗</option><option>退回改善</option><option>已結案</option></select><select id="uploader-filter" aria-label="上傳者篩選"><option value="">全部上傳者</option><option value="__me__">只看我上傳的</option></select></div></div>
+    <div class="section-head"><div><h2>缺失管理清冊</h2><small>彙整缺失內容、權責廠商及改善前後照片，可依關鍵字、改善狀態與上傳者篩選，並追蹤改善及複驗進度。</small></div><div class="filters"><input class="search" id="search" placeholder="搜尋編號、樓層、缺失內容、廠商"/><select id="status-filter"><option value="">全部狀態</option><option>待改善</option><option>改善中</option><option>已改善</option><option>待複驗</option><option>退回改善</option><option>已結案</option></select><select id="uploader-filter" aria-label="上傳者篩選"><option value="">全部上傳者</option><option value="__me__">只看我上傳的</option></select></div></div>
     <div class="record-grid" id="record-grid"><div class="loading">讀取缺失紀錄中…</div></div><div class="paging"><button class="btn" id="show-more" hidden>顯示更多缺失</button></div>
   </section>
   <footer>本機測試原型 · 照片保留在本機 data 資料夾 · AI 辨識並非正式工程查驗 · 「已改善」不代表「複驗合格」。實際對外部署前須加上登入、權限、HTTPS、備份及個資保護措施。</footer>
@@ -114,7 +123,39 @@ function statusTag(status){let c=status==='已結案'?'closed':status==='已改�
 function defectCard(d){return `<article class="record"><div class="record-top"><div><div class="record-id">系統自動編號 ${esc(d.display_id)}</div><h3>${esc(d.floor||'樓層待確認')} · ${esc(d.item||'聯合巡檢')}</h3></div>${statusTag(d.status)}</div><div class="record-meta"><span>日期 ${esc(d.found_date)}</span><span>權責 ${esc(d.contractor||'待確認')}</span><span>位置 ${esc(d.location||'未註明')}</span>${d.created_by?`<span>上傳者：${esc(d.created_by)}</span>`:''}</div><p class="record-desc">${esc(d.description||'缺失內容待確認')}</p><div class="photos"><div class="photo"><div class="photo-label">缺失原始照片</div><a href="${esc(d.initial_url)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(d.initial_url)}" alt="原始照片"/></a></div><div class="photo"><div class="photo-label">改善後照片</div>${d.improvement_url?`<a href="${esc(d.improvement_url)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(d.improvement_url)}" alt="改善照片"/></a>`:'<div class="empty">尚未回覆<br/>等待改善照片</div>'}</div></div><div class="record-bottom"><span>狀態變更須現場確認</span><select aria-label="變更改善狀態" data-did="${d.id}">${states.map(x=>`<option ${d.status===x?'selected':''}>${x}</option>`).join('')}</select></div></article>`}
 function render(){let keyword=$('#search').value.trim().toLowerCase(), st=$('#status-filter').value, up=$('#uploader-filter').value;let list=defects.filter(x=>(!st||x.status===st) && (!up||x.created_by===(up==='__me__'?me.user:up)) && (!keyword||[x.display_id,x.floor,x.location,x.description,x.contractor].join(' ').toLowerCase().includes(keyword)));$('#record-grid').innerHTML=list.length?list.slice(0,visible).map(defectCard).join(''):'<div class="empty-message">沒有符合條件的缺失紀錄</div>';$('#show-more').hidden=list.length<=visible;}
 function renderReview(){let q=$('#review-section');q.hidden=!pending.length;$('#review-count').textContent=`(${pending.length})`;let options=defects.map(x=>`<option value="${x.id}">${esc(x.display_id)}｜${esc(x.floor)} ${esc(x.description||'')}</option>`).join('');$('#review-list').innerHTML=pending.map(p=>{let x=p.ai_result||{};return `<div class="review-item"><img loading="lazy" src="${esc(p.preview_url)}" alt="待確認照片"/><div class="review-content"><b>${esc(p.original_filename||'照片')} · AI 暫判：${esc(p.photo_type||'unknown')}</b><p>${esc(p.reason)}。辨識內容：${esc(x.description||'未辨識到缺失文字')}</p><form class="review-form" data-sid="${p.id}"><label>照片類型<select name="photo_type"><option value="improvement" ${p.photo_type==='improvement'?'selected':''}>改善後照片</option><option value="defect" ${p.photo_type!=='improvement'?'selected':''}>新增缺失</option></select></label><label>若為改善後，對應原缺失<select name="defect_id"><option value="">請選擇…</option>${options}</select></label><label>日期 YYYY-MM-DD<input name="found_date" placeholder="2026-11-04" value="${esc(x.found_date||'')}"/></label><label>樓層<input name="floor" value="${esc(x.floor||'')}"/></label><label>空間編號<input name="location" value="${esc(x.location||'')}"/></label><label>檢查項目<input name="item" value="${esc(x.item||'聯合巡檢')}"/></label><label>權責廠商<input name="contractor" value="${esc(x.contractor||'')}"/></label><label class="wide">缺失內容<input name="description" value="${esc(x.description||'')}"/></label></form><div class="review-actions"><button class="btn primary small" data-confirm="${p.id}">確認並歸檔</button></div></div></div>`}).join('')}
-async function load(){let [r,q]=await Promise.all([fetch('/api/defects'),fetch('/api/review')]);if(!r.ok||!q.ok)throw Error('無法讀取資料');let a=await r.json(),b=await q.json();defects=a.items;pending=b.items;$('#stat-total').textContent=defects.length;$('#stat-open').textContent=defects.filter(x=>x.status!=='已結案').length;$('#stat-improved').textContent=a.summary.improved;$('#stat-review').textContent=pending.length;renderUploaderFilter();renderReview();render();if(!$('#admin-section').hidden)await loadAdmin()}
+async function load(){let [r,q]=await Promise.all([fetch('/api/defects'),fetch('/api/review')]);if(!r.ok||!q.ok)throw Error('無法讀取資料');let a=await r.json(),b=await q.json();defects=a.items;pending=b.items;$('#stat-total').textContent=defects.length;$('#stat-open').textContent=defects.filter(x=>x.status!=='已結案').length;$('#stat-improved').textContent=a.summary.improved;$('#stat-review').textContent=pending.length;renderUploaderFilter();renderContractorFilter();renderReview();render();if(!$('#admin-section').hidden)await loadAdmin()}
+function contractorStats(items){
+  const groups=new Map();
+  for(const item of items){
+    const name=(item.contractor||'').trim();
+    if(!groups.has(name))groups.set(name,{name,total:0,improved:0});
+    const group=groups.get(name);group.total++;
+    if(['已改善','待複驗','已結案'].includes(item.status))group.improved++;
+  }
+  return [...groups.values()].sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name,'zh-Hant'));
+}
+function renderContractorFilter(){
+  const sel=$('#contractor-filter'),current=sel.value,groups=contractorStats(defects);
+  // Prefix real names so empty/unknown names never collide with the all-contractors option.
+  sel.innerHTML='<option value="">全部廠商</option>'+groups.map(g=>`<option value="${esc('name:'+g.name)}">${esc(g.name||'未填權責廠商')}</option>`).join('');
+  sel.value=[...sel.options].some(o=>o.value===current)?current:'';
+  renderContractorChart();
+}
+function renderContractorChart(){
+  const selected=$('#contractor-filter').value;
+  const groups=contractorStats(defects).filter(g=>!selected||'name:'+g.name===selected);
+  const total=groups.reduce((sum,g)=>sum+g.total,0),improved=groups.reduce((sum,g)=>sum+g.improved,0);
+  $('#contractor-total').textContent=total;
+  $('#contractor-improved').textContent=improved;
+  $('#contractor-rate').textContent=total?(improved/total*100).toFixed(1)+'%':'—';
+  const maximum=Math.max(1,...groups.map(g=>g.total));
+  $('#contractor-chart').innerHTML=groups.length?groups.map(g=>{
+    const rate=(g.improved/g.total*100).toFixed(1);
+    const bar=(label,value,width,cls='')=>`<div class="contractor-bar-line"><span>${label}</span><div class="contractor-track" aria-hidden="true"><div class="contractor-bar ${cls}" style="width:${width}%"></div></div><span>${value}</span></div>`;
+    return `<div class="contractor-chart-row"><div class="contractor-chart-title"><strong>${esc(g.name||'未填權責廠商')}</strong><span>尚未改善 ${g.total-g.improved} 件</span></div>${bar('缺失總數',g.total,g.total/maximum*100)}${bar('已改善',g.improved,g.improved/maximum*100,'improved')}${bar('完成率',rate+'%',rate,'rate')}</div>`;
+  }).join(''):'<div class="empty-message">目前沒有可統計的缺失紀錄</div>';
+}
+$('#contractor-filter').addEventListener('change',renderContractorChart);
 function renderUploaderFilter(){let sel=$('#uploader-filter'),cur=sel.value,names=[...new Set(defects.map(x=>x.created_by).filter(Boolean))].sort();sel.innerHTML='<option value="">全部上傳者</option><option value="__me__">只看我上傳的</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');sel.value=[...sel.options].some(o=>o.value===cur)?cur:''}
 $('#drop-area').addEventListener('click',()=>$('#file-input').click());$('#drop-area').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('#file-input').click()}});
 for(let ev of ['dragenter','dragover'])$('#drop-area').addEventListener(ev,e=>{e.preventDefault();$('#drop-area').classList.add('drag')});

@@ -33,6 +33,7 @@ DATABASE = DATA / 'defects.sqlite3'
 IMAGES.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 
 def load_secret_key():
@@ -188,13 +189,17 @@ def init_db():
             db.execute('UPDATE defects SET serial_no=? WHERE id=?',(serial,row['id']))
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_defect_serial ON defects(serial_no)')
         existing = db.execute('SELECT COUNT(*) n FROM defects').fetchone()['n']
-        if not existing:
+        # Only seed a new installation once; an intentionally cleared register stays empty.
+        db.execute('CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        seeded = db.execute("SELECT 1 FROM app_metadata WHERE key='seed_initialized'").fetchone()
+        if not existing and not seeded:
             seeds = json.loads((BASE / 'seed.json').read_text(encoding='utf-8'))
             for i, r in enumerate(seeds, 1):
                 shutil.copy2(BASE / 'seed_images' / r['initial_photo'], IMAGES / r['initial_photo'])
                 db.execute('''INSERT INTO defects(public_id,board_no,found_date,floor,location,item,description,contractor,status,initial_photo,notes,serial_no)
                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
                            (r['public_id'], r['board_no'], r['date'], r['floor'], r['location'], r['item'], r['description'], r['contractor'], r['status'], r['initial_photo'], r['notes'], i))
+        db.execute("INSERT OR IGNORE INTO app_metadata(key,value) VALUES ('seed_initialized','1')")
 
 
 def json_defect(row):
